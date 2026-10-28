@@ -176,14 +176,15 @@ def main(argv: list[str] | None = None) -> int:
     if not host:
         print("EMAIL_DISABLED: set EMAIL_SMTP_HOST for this sender domain", file=sys.stderr)
         return 0
-    try:
-        port = int(os.getenv("EMAIL_SMTP_PORT", "465" if os.getenv("EMAIL_SMTP_MODE", "ssl").lower() == "ssl" else "587"))
-    except ValueError:
-        print("EMAIL_FAILED: EMAIL_SMTP_PORT must be an integer", file=sys.stderr)
-        return 1
-    mode = os.getenv("EMAIL_SMTP_MODE", "ssl").strip().lower()
+    mode = os.getenv("EMAIL_SMTP_MODE", "").strip().lower() or "ssl"
     if mode not in {"ssl", "starttls"}:
         print("EMAIL_FAILED: EMAIL_SMTP_MODE must be ssl or starttls", file=sys.stderr)
+        return 1
+    port_value = os.getenv("EMAIL_SMTP_PORT", "").strip()
+    try:
+        port = int(port_value) if port_value else (465 if mode == "ssl" else 587)
+    except ValueError:
+        print("EMAIL_FAILED: EMAIL_SMTP_PORT must be an integer", file=sys.stderr)
         return 1
     try:
         _send(msg, sender=sender, password=password, host=host, port=port, mode=mode)

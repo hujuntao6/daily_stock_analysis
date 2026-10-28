@@ -171,6 +171,60 @@ class HealthcareDeploymentTests(unittest.TestCase):
             self.assertIn("行情覆盖1/2", subject)
             self.assertIn("事件/催化剂按官方来源可得性", subject)
 
+    def _write_complete_email_fixture(self, root: Path) -> Path:
+        report_dir = root / "mail-report"
+        report_dir.mkdir()
+        (report_dir / "report.json").write_text(
+            json.dumps({"status": "complete", "coverage": {"requested": 1, "covered": 1}}),
+            encoding="utf-8",
+        )
+        (report_dir / "report.md").write_text("# report", encoding="utf-8")
+        return report_dir
+
+    @patch("scripts.healthcare_email._send")
+    def test_email_defaults_empty_optional_smtp_values_for_163_ssl(self, send):
+        with TemporaryDirectory(dir=ROOT) as temp:
+            report_dir = self._write_complete_email_fixture(Path(temp))
+            with patch.dict(
+                os.environ,
+                {
+                    "EMAIL_SENDER": "sender@163.com",
+                    "EMAIL_PASSWORD": "secret",
+                    "EMAIL_RECEIVERS": "to@example.com",
+                    "EMAIL_SMTP_HOST": "",
+                    "EMAIL_SMTP_PORT": "   ",
+                    "EMAIL_SMTP_MODE": "",
+                },
+                clear=True,
+            ):
+                self.assertEqual(email_main(["--report-dir", str(report_dir), "--session", "us"]), 0)
+            kwargs = send.call_args.kwargs
+            self.assertEqual(kwargs["host"], "smtp.163.com")
+            self.assertEqual(kwargs["port"], 465)
+            self.assertEqual(kwargs["mode"], "ssl")
+
+    @patch("scripts.healthcare_email._send")
+    def test_email_defaults_empty_port_for_starttls(self, send):
+        with TemporaryDirectory(dir=ROOT) as temp:
+            report_dir = self._write_complete_email_fixture(Path(temp))
+            with patch.dict(
+                os.environ,
+                {
+                    "EMAIL_SENDER": "sender@163.com",
+                    "EMAIL_PASSWORD": "secret",
+                    "EMAIL_RECEIVERS": "to@example.com",
+                    "EMAIL_SMTP_HOST": "",
+                    "EMAIL_SMTP_PORT": "",
+                    "EMAIL_SMTP_MODE": "starttls",
+                },
+                clear=True,
+            ):
+                self.assertEqual(email_main(["--report-dir", str(report_dir), "--session", "ah"]), 0)
+            kwargs = send.call_args.kwargs
+            self.assertEqual(kwargs["host"], "smtp.163.com")
+            self.assertEqual(kwargs["port"], 587)
+            self.assertEqual(kwargs["mode"], "starttls")
+
 
 if __name__ == "__main__":
     unittest.main()
