@@ -31,16 +31,16 @@
     {"market":"hk","symbol":"1548.HK","name":"金斯瑞生物科技","subsector":"生物科技服务","official_domains":["hkexnews.hk","gslbio.com"],"ir_feeds":[],"nct_ids":[]},
     {"market":"us","symbol":"LLY","name":"Eli Lilly","subsector":"创新药","official_domains":["sec.gov","lilly.com"],"ir_feeds":[],"cik":"0000059478","nct_ids":[]},
     {"market":"us","symbol":"NVO","name":"Novo Nordisk","subsector":"代谢药物","official_domains":["sec.gov","novonordisk.com"],"ir_feeds":[],"cik":"0000353278","nct_ids":[]},
-    {"market":"us","symbol":"AMGN","name":"Amgen","subsector":"创新药","official_domains":["sec.gov","amgen.com"],"ir_feeds":[],"cik":"0000318154","nct_ids":[]},
-    {"market":"us","symbol":"GILD","name":"Gilead Sciences","subsector":"创新药","official_domains":["sec.gov","gilead.com"],"ir_feeds":[],"cik":"0000882095","nct_ids":[]},
-    {"market":"us","symbol":"REGN","name":"Regeneron Pharmaceuticals","subsector":"创新药","official_domains":["sec.gov","regeneron.com"],"ir_feeds":[],"cik":"0000872589","nct_ids":[]},
+    {"market":"us","symbol":"AMGN","name":"Amgen","subsector":"创新药","official_domains":["sec.gov","amgen.com"],"ir_feeds":["https://www.amgen.com/MyApi/Custom/NewsListing/GetRecentNewsReleasesV2?count=5&isNasdaq=false&rootId=%7B623B9876-33FF-40EB-BDA0-8465365C59C8%7D","https://www.amgen.com/newsroom/press-releases"],"cik":"0000318154","nct_ids":[]},
+    {"market":"us","symbol":"GILD","name":"Gilead Sciences","subsector":"创新药","official_domains":["sec.gov","gilead.com"],"ir_feeds":["https://www.gilead.com/news/news-details/2026/gilead-sciences-to-release-third-quarter-2026-financial-results-on-thursday-october-29-2026","https://www.gilead.com/news/news-details"],"cik":"0000882095","nct_ids":[]},
+    {"market":"us","symbol":"REGN","name":"Regeneron Pharmaceuticals","subsector":"创新药","official_domains":["sec.gov","regeneron.com"],"ir_feeds":["https://investor.regeneron.com/investor-relations/"],"cik":"0000872589","nct_ids":[]},
     {"market":"us","symbol":"VRTX","name":"Vertex Pharmaceuticals","subsector":"创新药","official_domains":["sec.gov","vrtx.com"],"ir_feeds":[],"cik":"0000875320","nct_ids":[]},
     {"market":"us","symbol":"MRNA","name":"Moderna","subsector":"疫苗与核酸药物","official_domains":["sec.gov","modernatx.com"],"ir_feeds":[],"cik":"0001682852","nct_ids":[]},
-    {"market":"us","symbol":"PFE","name":"Pfizer","subsector":"综合制药","official_domains":["sec.gov","pfizer.com"],"ir_feeds":[],"cik":"0000078003","nct_ids":[],"sponsor_aliases":["Pfizer Inc."],"sponsor_alias_sources":["https://www.sec.gov/edgar/browse/?CIK=78003"]},
-    {"market":"us","symbol":"ABBV","name":"AbbVie","subsector":"综合制药","official_domains":["sec.gov","abbvie.com"],"ir_feeds":[],"cik":"0001551152","nct_ids":[]},
-    {"market":"us","symbol":"BMY","name":"Bristol Myers Squibb","subsector":"综合制药","official_domains":["sec.gov","bms.com"],"ir_feeds":[],"cik":"0000014272","nct_ids":[]},
-    {"market":"us","symbol":"ISRG","name":"Intuitive Surgical","subsector":"医疗器械","official_domains":["sec.gov","intuitive.com"],"ir_feeds":[],"cik":"0001035267","nct_ids":[]},
-    {"market":"us","symbol":"TMO","name":"Thermo Fisher Scientific","subsector":"生命科学工具","official_domains":["sec.gov","thermofisher.com"],"ir_feeds":[],"cik":"0000097745","nct_ids":[]}
+    {"market":"us","symbol":"PFE","name":"Pfizer","subsector":"综合制药","official_domains":["sec.gov","pfizer.com"],"ir_feeds":["https://www.pfizer.com/newsroom/press-releases"],"cik":"0000078003","nct_ids":[],"sponsor_aliases":["Pfizer Inc."],"sponsor_alias_sources":["https://www.sec.gov/edgar/browse/?CIK=78003"]},
+    {"market":"us","symbol":"ABBV","name":"AbbVie","subsector":"综合制药","official_domains":["sec.gov","abbvie.com"],"ir_feeds":["https://news.abbvie.com/"],"cik":"0001551152","nct_ids":[]},
+    {"market":"us","symbol":"BMY","name":"Bristol Myers Squibb","subsector":"综合制药","official_domains":["sec.gov","bms.com"],"ir_feeds":["https://news.bms.com/news/default.aspx"],"cik":"0000014272","nct_ids":[]},
+    {"market":"us","symbol":"ISRG","name":"Intuitive Surgical","subsector":"医疗器械","official_domains":["sec.gov","intuitive.com"],"ir_feeds":["https://isrg.intuitive.com/press-releases"],"cik":"0001035267","nct_ids":[]},
+    {"market":"us","symbol":"TMO","name":"Thermo Fisher Scientific","subsector":"生命科学工具","official_domains":["sec.gov","thermofisher.com"],"ir_feeds":["https://ir.thermofisher.com/investors/news-events/news/default.aspx"],"cik":"0000097745","nct_ids":[]}
   ],
   "provider": {
     "quote_priority": ["yfinance", "akshare"],
@@ -51,6 +51,7 @@
   "source_policy": {
     "allowed_domains": ["cninfo.com.cn", "sse.com.cn", "szse.cn", "hkexnews.hk", "hkex.com.hk", "sec.gov", "clinicaltrials.gov", "fda.gov", "ema.europa.eu", "hematology.org", "sitcancer.org"],
     "calendar_files": ["config/healthcare-calendar.json"],
+    "ir_lookback_days": 90,
     "company_domain_allowed": true,
     "require_publisher": true,
     "require_published_at": true,
@@ -64,8 +65,8 @@
     "sessions": {"us": {"label": "美股晨报", "timezone": "Asia/Shanghai", "delivery_time": "07:30"}, "ah": {"label": "A/H晚报", "timezone": "Asia/Shanghai", "delivery_time": "18:30"}},
     "catalyst_horizons_days": [7, 30, 90],
     "max_rows_per_section": 20,
-    "representative_universe": true,
-    "universe_note": "初始股票池为代表性医药生物、器械、CXO、服务、中药及流通标的，不代表全行业；建议按用户持仓和授权数据源动态扩展。"
+    "representative_universe": false,
+    "universe_note": "2026-10-27 iFinD行业分类快照，A515/H302/US1031，总1848；全池行情，证据聚焦异动+配置重点；股票池非自动更新，未覆盖来源明确标记"
   },
   "universe_sources": [
     {"name": "中国上市公司公告", "url": "https://www.cninfo.com.cn/new/index"},

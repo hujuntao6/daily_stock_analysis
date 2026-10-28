@@ -17,11 +17,11 @@ from scripts.healthcare_email import main as email_main
 
 
 class HealthcareDeploymentTests(unittest.TestCase):
-    def test_representative_universe_covers_all_requested_markets(self):
+    def test_full_snapshot_covers_all_requested_markets(self):
         config = load_config(ROOT / "config" / "healthcare.json")
         self.assertEqual(len(config.universe), 1848)
         self.assertEqual({item.market for item in config.universe}, {"cn", "hk", "us"})
-        self.assertTrue(config.report["representative_universe"])
+        self.assertFalse(config.report["representative_universe"])
         self.assertEqual(config.markets_for_session("us"), ("us",))
         self.assertEqual(config.markets_for_session("ah"), ("cn", "hk"))
 

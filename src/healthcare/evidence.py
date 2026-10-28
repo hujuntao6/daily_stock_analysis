@@ -18,6 +18,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
+from html.parser import HTMLParser
+from pathlib import Path
 from typing import Any, Iterable
 from xml.etree import ElementTree
 from zoneinfo import ZoneInfo
@@ -157,12 +159,312 @@ def _clean_html_snippet(text: str, limit: int = 2000) -> str:
 
 def _parse_published(value: Any) -> tuple[datetime | None, str]:
     text = str(value or "").strip()
-    if not text:
+    if not text or text.lower() in {"unknown", "null", "none", "n/a", "na", "不详", "未知"}:
         return None, "unknown"
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        if _parse_date(text) is None:
+            return None, "unknown"
         return _date_only_timestamp(text), "date"
-    parsed = _parse_datetime(value)
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = parsedate_to_datetime(text)
+        except (TypeError, ValueError, IndexError):
+            return None, "unknown"
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed, "timestamp"
+
+
+def _parse_web_published(value: Any) -> tuple[datetime | None, str]:
+    """Parse publication metadata without inventing a time zone or time.
+
+    Investor-relations JSON and HTML commonly expose ``2026-10-27`` or a
+    naive ISO value.  Those values are useful as calendar dates, but treating
+    them as UTC timestamps would create a false intraday attribution.  Only
+    an explicit offset (or an RFC-2822 zone) is promoted to ``timestamp``.
+    """
+
+    text = str(value or "").strip()
+    if not text or text.lower() in {"unknown", "null", "none", "n/a", "na", "不详", "未知"}:
+        return None, "unknown"
+    if re.fullmatch(r"\d{4}-\d{1,2}-\d{1,2}", text):
+        parsed = _parse_date(text)
+        return (_date_only_timestamp(parsed), "date") if parsed else (None, "unknown")
+    if re.fullmatch(r"20\d{2}[年/-]\d{1,2}[月/-]\d{1,2}日?", text):
+        parsed = _parse_date(re.sub(r"年|月", "-", text).replace("日", "").replace("/", "-"))
+        return (_date_only_timestamp(parsed), "date") if parsed else (None, "unknown")
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            return _date_only_timestamp(parsed.date()), "date"
+        return parsed, "timestamp"
+    except ValueError:
+        pass
+    try:
+        parsed = parsedate_to_datetime(text)
+        if parsed.tzinfo is None:
+            return _date_only_timestamp(parsed.date()), "date"
+        return parsed, "timestamp"
+    except (TypeError, ValueError, IndexError):
+        pass
+    for fmt in (
+        "%B %d, %Y",
+        "%b %d, %Y",
+        "%d %B %Y",
+        "%d %b %Y",
+        "%m.%d.%Y",
+        "%m/%d/%Y",
+        "%m-%d-%Y",
+    ):
+        try:
+            parsed = datetime.strptime(re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", text, flags=re.I), fmt).date()
+            return _date_only_timestamp(parsed), "date"
+        except ValueError:
+            continue
+    return None, "unknown"
+
+
+class _IRHTMLParser(HTMLParser):
+    """Small dependency-free parser for official IR pages.
+
+    It intentionally drops navigation, footer, scripts and style blocks.  It
+    is not a general HTML sanitizer; it only provides enough structure to
+    identify an official detail page, its links and publication metadata.
+    """
+
+    _SUPPRESSED = {"aside", "footer", "form", "header", "nav", "noscript", "script", "style", "svg"}
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.meta: dict[str, list[str]] = {}
+        self.anchors: list[tuple[str, str]] = []
+        self.times: list[tuple[str, str]] = []
+        self.jsonld: list[str] = []
+        self._visible: list[str] = []
+        self._title: list[str] = []
+        self._heading: list[str] = []
+        self._title_depth = 0
+        self._heading_depth = 0
+        self._suppressed: list[str] = []
+        self._script_json = False
+        self._script_buffer: list[str] = []
+        self._anchor_stack: list[dict[str, Any]] = []
+        self._time_stack: list[dict[str, Any]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        tag = tag.lower()
+        attr = {str(key).lower(): (value or "") for key, value in attrs}
+        layout = f"{attr.get('id', '')} {attr.get('class', '')}".lower()
+        layout_container = bool(re.search(r"(?:^|[\s_-])(footer|site-footer|navbar|navigation|cookie)(?:$|[\s_-])", layout))
+        if tag == "script":
+            self._script_json = "ld+json" in attr.get("type", "").lower()
+            self._script_buffer = []
+            self._suppressed.append(tag)
+            return
+        if self._suppressed:
+            if tag in self._SUPPRESSED or layout_container:
+                self._suppressed.append(tag)
+            return
+        if tag in self._SUPPRESSED or layout_container:
+            self._suppressed.append(tag)
+            return
+        if tag == "meta":
+            key = attr.get("property") or attr.get("name") or attr.get("itemprop")
+            content = attr.get("content", "").strip()
+            if key and content:
+                self.meta.setdefault(key.lower(), []).append(content)
+        elif tag == "a":
+            self._anchor_stack.append({"href": attr.get("href") or attr.get("data-href") or attr.get("data-url") or "", "text": []})
+        elif tag == "time":
+            self._time_stack.append({"datetime": attr.get("datetime", ""), "text": []})
+        elif tag == "title":
+            self._title_depth += 1
+        elif tag in {"h1", "h2"}:
+            self._heading_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        if tag == "script":
+            if self._script_json and self._script_buffer:
+                self.jsonld.append("".join(self._script_buffer))
+            self._script_json = False
+            self._script_buffer = []
+            if self._suppressed and self._suppressed[-1] == tag:
+                self._suppressed.pop()
+            return
+        if self._suppressed:
+            if self._suppressed[-1] == tag:
+                self._suppressed.pop()
+            return
+        if tag == "a" and self._anchor_stack:
+            row = self._anchor_stack.pop()
+            self.anchors.append((str(row.get("href") or ""), " ".join(row.get("text") or []).strip()))
+        elif tag == "time" and self._time_stack:
+            row = self._time_stack.pop()
+            self.times.append((str(row.get("datetime") or ""), " ".join(row.get("text") or []).strip()))
+        elif tag == "title":
+            self._title_depth = max(0, self._title_depth - 1)
+        elif tag in {"h1", "h2"}:
+            self._heading_depth = max(0, self._heading_depth - 1)
+
+    def handle_data(self, data: str) -> None:
+        if self._script_json:
+            self._script_buffer.append(data)
+            return
+        if self._suppressed:
+            return
+        text = data.strip()
+        if not text:
+            return
+        self._visible.append(text)
+        if self._title_depth:
+            self._title.append(text)
+        if self._heading_depth:
+            self._heading.append(text)
+        if self._anchor_stack:
+            self._anchor_stack[-1]["text"].append(text)
+        if self._time_stack:
+            self._time_stack[-1]["text"].append(text)
+
+    @property
+    def visible_text(self) -> str:
+        return " ".join(self._visible)
+
+    @property
+    def title_text(self) -> str:
+        return " ".join(self._title).strip()
+
+    @property
+    def heading_text(self) -> str:
+        return " ".join(self._heading).strip()
+
+
+def _jsonld_objects(values: Iterable[str]) -> list[dict[str, Any]]:
+    objects: list[dict[str, Any]] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            objects.append(value)
+            for child in value.values():
+                if isinstance(child, (dict, list)):
+                    walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    for raw in values:
+        try:
+            walk(json.loads(html.unescape(raw)))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            continue
+    return objects
+
+
+def _first_json_value(rows: Iterable[dict[str, Any]], keys: Iterable[str]) -> Any:
+    wanted = {str(key).lower() for key in keys}
+    for row in rows:
+        for key, value in row.items():
+            if str(key).lower() in wanted and value not in (None, "", []):
+                return value
+    return None
+
+
+def _publication_date_from_text(text: str) -> tuple[datetime | None, str]:
+    pattern = re.compile(
+        r"(?:published|posted|issued|publication\s+date|发布日期|发布时间|发布于)"
+        r"\s*(?:on|at|date)?\s*[:：-]?\s*"
+        r"(20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}|20\d{2}年\d{1,2}月\d{1,2}日?|"
+        r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+        r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|"
+        r"Dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+20\d{2})",
+        re.IGNORECASE,
+    )
+    match = pattern.search(text or "")
+    return _parse_web_published(match.group(1)) if match else (None, "unknown")
+
+
+def _parse_ir_html(text: str) -> dict[str, Any]:
+    parser = _IRHTMLParser()
+    try:
+        parser.feed(text)
+        parser.close()
+    except Exception:
+        # HTMLParser is forgiving; retain the data collected before malformed
+        # markup rather than treating a publisher's page as an empty source.
+        pass
+    json_rows = _jsonld_objects(parser.jsonld)
+    published_value = _first_json_value(json_rows, ("datePublished", "dateCreated"))
+    title_value = _first_json_value(json_rows, ("headline", "name"))
+    body_value = _first_json_value(json_rows, ("articleBody", "description"))
+    for key in ("article:published_time", "datepublished", "date", "pubdate", "publishdate", "published"):
+        if published_value in (None, "") and parser.meta.get(key):
+            published_value = parser.meta[key][0]
+    if published_value in (None, ""):
+        for datetime_value, text_value in parser.times:
+            published_value = datetime_value or text_value
+            if published_value:
+                break
+    published, precision = _parse_web_published(published_value)
+    if published is None:
+        published, precision = _publication_date_from_text(parser.visible_text)
+    title = str(title_value or "").strip() or parser.meta.get("og:title", [""])[0].strip()
+    title = title or parser.heading_text or parser.title_text or "IR update"
+    body = " ".join(part for part in (str(body_value or "").strip(), parser.visible_text) if part)
+    body = _clean_html_snippet(body, limit=20_000)
+    return {
+        "title": _clean_html_snippet(title, limit=500),
+        "body": body,
+        "published": published,
+        "published_precision": precision,
+        "anchors": parser.anchors,
+        "json_rows": json_rows,
+    }
+
+
+def _json_listing_candidates(payload: Any) -> list[dict[str, Any]]:
+    """Find explicit detail-link rows in an official JSON listing response."""
+
+    link_keys = ("url", "link", "href", "detailurl", "articleurl", "newsurl", "releaseurl")
+    title_keys = ("title", "headline", "name", "subject")
+    date_keys = ("datepublished", "published_at", "publisheddate", "publishdate", "published", "date", "releasedate")
+    body_keys = ("description", "summary", "content", "body", "snippet", "excerpt")
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def find(row: dict[str, Any], keys: Iterable[str]) -> Any:
+        wanted = {key.lower().replace("_", "") for key in keys}
+        for key, value in row.items():
+            if str(key).lower().replace("_", "") in wanted and isinstance(value, (str, int, float)):
+                return value
+        return None
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            link = find(value, link_keys)
+            title = find(value, title_keys)
+            if link and title:
+                link_text = str(link).strip()
+                if link_text and link_text not in seen:
+                    seen.add(link_text)
+                    result.append(
+                        {
+                            "url": link_text,
+                            "title": str(title).strip(),
+                            "published_value": find(value, date_keys),
+                            "body": str(find(value, body_keys) or "").strip(),
+                        }
+                    )
+            for child in value.values():
+                if isinstance(child, (dict, list)):
+                    walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(payload)
+    return result
 
 
 def _parse_sec_acceptance(value: Any) -> datetime:
@@ -313,8 +615,12 @@ class EvidenceCollector:
     def _fetch(self, url: str, allowed_domains: Iterable[str]) -> tuple[str, str]:
         if not is_authoritative_url(url, allowed_domains):
             raise EvidenceError(f"URL is outside authoritative domains: {url}")
-        allowed = {normalise_domain(domain) for domain in allowed_domains}
-        if any(domain == "sec.gov" or domain.endswith(".sec.gov") for domain in allowed):
+        # A security's allow-list often contains both SEC and company IR
+        # domains.  SEC's mandatory identification header applies to the
+        # actual request host, not to every request whose allow-list happens
+        # to include ``sec.gov``.
+        request_host = _hostname(url)
+        if request_host == "sec.gov" or request_host.endswith(".sec.gov"):
             user_agent = os.getenv("SEC_USER_AGENT", "").strip()
             if not user_agent:
                 sender = os.getenv("EMAIL_SENDER", "").strip()
@@ -464,53 +770,373 @@ class EvidenceCollector:
             bundle.statuses.append(SourceStatus("sec", "error", 0, str(exc)))
             bundle.gaps.append(f"SEC 数据缺口：{security.symbol}（{exc}）")
 
+    def _add_ir_evidence(
+        self,
+        security: Security,
+        bundle: EvidenceBundle,
+        *,
+        url: str,
+        title: str,
+        body: str,
+        published: datetime | None,
+        published_precision: str,
+        raw: str,
+        as_of_date: date,
+        lookback_days: int,
+    ) -> bool:
+        """Add one official IR item after date, domain and provenance checks."""
+
+        link = str(url or "")
+        if not is_authoritative_url(link, security.official_domains):
+            bundle.gaps.append(f"IR 证据拒绝：{link or '<empty url>'}")
+            return False
+        full_snippet = _clean_html_snippet("；".join(part for part in (title, body) if part), limit=20_000)
+        if not full_snippet:
+            bundle.gaps.append(f"IR 正文缺口：{security.symbol} {link}")
+            return False
+        future = _forward_event(full_snippet, as_of_date)
+        if published is not None:
+            published_day = published.astimezone(self.config.zone).date()
+            if published_day > as_of_date:
+                bundle.gaps.append(f"IR 未来日期条目跳过：{security.symbol} {link}")
+                return False
+            # A stale announcement that explicitly contains a still-future
+            # catalyst is retained for the catalyst section.  Attribution is
+            # independently bounded downstream by publication/session time.
+            if (as_of_date - published_day).days > lookback_days and not (
+                future and future[0] > as_of_date
+            ):
+                bundle.gaps.append(f"IR 旧公告跳过：{security.symbol} {link}")
+                return False
+        identifiers = (security.symbol, title or link)
+        item = Evidence(
+            id=_evidence_id(link, published, identifiers),
+            url=link,
+            publisher=security.name,
+            published_at=published,
+            retrieved_at=datetime.now(timezone.utc),
+            snippet=full_snippet,
+            identifiers=identifiers,
+            source_kind="company_ir",
+            event_date=future[0] if future else None,
+            event_precision=future[2] if future else None,
+            event_label=future[3] if future else None,
+            event_window_end=future[1] if future else None,
+            event_status=future[4] if future else None,
+            published_precision=published_precision or "unknown",
+        )
+        before = len(bundle.evidence)
+        bundle.add(item, raw=raw)
+        return len(bundle.evidence) > before
+
+    @staticmethod
+    def _is_ir_detail_url(url: str) -> bool:
+        path = urllib.parse.urlparse(url).path.lower().rstrip("/")
+        if not path:
+            return False
+        last = path.rsplit("/", 1)[-1]
+        generic = {
+            "news",
+            "news-details",
+            "news-release",
+            "news-releases",
+            "press-release",
+            "press-releases",
+            "press-kits",
+            "presskits",
+            "press",
+            "media",
+            "newsroom",
+            "investors",
+            "investor-relations",
+            "news-center",
+            "index.html",
+            "default.aspx",
+        }
+        if last in generic:
+            return False
+        return any(token in path for token in ("/news", "/press", "/release", "/article", "/story"))
+
+    def _collect_ir_json(
+        self,
+        security: Security,
+        bundle: EvidenceBundle,
+        *,
+        text: str,
+        final_url: str,
+        as_of_date: date,
+        lookback_days: int,
+    ) -> int:
+        try:
+            payload = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError) as exc:
+            bundle.gaps.append(f"IR JSON 解析缺口：{security.symbol} {final_url}（{exc}）")
+            return 0
+        rows = _json_listing_candidates(payload)
+        limit = self._ir_detail_limit()
+        count = 0
+        if not rows:
+            bundle.gaps.append(f"IR JSON列表未发现明确详情链接：{security.symbol} {final_url}")
+            return 0
+        for row in rows[:limit]:
+            link = urllib.parse.urljoin(final_url, str(row.get("url") or ""))
+            if not is_authoritative_url(link, security.official_domains):
+                bundle.gaps.append(f"IR 证据拒绝：{link}")
+                continue
+            if link == final_url:
+                bundle.gaps.append(f"IR JSON列表详情链接缺失：{security.symbol} {link}")
+                continue
+            try:
+                detail_text, detail_url = self._fetch(link, security.official_domains)
+            except Exception as exc:
+                bundle.gaps.append(f"IR 详情页缺口：{security.symbol} {link}（{exc}）")
+                continue
+            detail = _parse_ir_html(detail_text) if not detail_text.lstrip("\ufeff \t\r\n").startswith(("{", "[")) else {}
+            detail_payload: dict[str, Any] = {}
+            if not detail:
+                try:
+                    parsed_detail = json.loads(detail_text)
+                    if isinstance(parsed_detail, dict):
+                        detail_payload = parsed_detail
+                    detail_rows = _json_listing_candidates(parsed_detail)
+                    if detail_rows:
+                        detail_payload = detail_rows[0]
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    detail_payload = {}
+            detail_title = str(detail.get("title") or detail_payload.get("title") or row.get("title") or "IR update")
+            detail_body = str(detail.get("body") or detail_payload.get("body") or "")
+            published = detail.get("published")
+            precision = str(detail.get("published_precision") or "unknown")
+            if published is None and detail_payload:
+                published, precision = _parse_web_published(
+                    detail_payload.get("published_value")
+                    or detail_payload.get("datePublished")
+                    or detail_payload.get("published")
+                    or detail_payload.get("date")
+                )
+            if published is None:
+                published, precision = _parse_web_published(row.get("published_value"))
+            body = "；".join(part for part in (str(row.get("title") or ""), str(row.get("body") or ""), detail_body) if part)
+            raw = json.dumps(
+                {
+                    # Put the detail first so EvidenceBundle's bounded raw
+                    # archive preserves the article body if a listing is
+                    # unusually large.
+                    "detail_url": detail_url,
+                    "detail": detail_text[:120_000],
+                    "listing_url": final_url,
+                    "listing": text[:30_000],
+                    "truncated": len(detail_text) > 120_000 or len(text) > 30_000,
+                },
+                ensure_ascii=False,
+            )
+            if self._add_ir_evidence(
+                security,
+                bundle,
+                url=detail_url,
+                title=detail_title,
+                body=body,
+                published=published,
+                published_precision=precision,
+                raw=raw,
+                as_of_date=as_of_date,
+                lookback_days=lookback_days,
+            ):
+                count += 1
+        return count
+
+    def _collect_ir_html(
+        self,
+        security: Security,
+        bundle: EvidenceBundle,
+        *,
+        text: str,
+        final_url: str,
+        as_of_date: date,
+        lookback_days: int,
+    ) -> int:
+        document = _parse_ir_html(text)
+        json_article = any(
+            str(row.get("@type") or "").lower() in {"article", "newsarticle", "pressrelease"}
+            for row in document.get("json_rows", [])
+        )
+        detail_page = json_article or self._is_ir_detail_url(final_url)
+        if detail_page and (document.get("body") or document.get("title")):
+            if self._add_ir_evidence(
+                security,
+                bundle,
+                url=final_url,
+                title=str(document.get("title") or "IR update"),
+                body=str(document.get("body") or ""),
+                published=document.get("published"),
+                published_precision=str(document.get("published_precision") or "unknown"),
+                raw=text,
+                as_of_date=as_of_date,
+                lookback_days=lookback_days,
+            ):
+                return 1
+            return 0
+
+        links: list[str] = []
+        seen: set[str] = set()
+        for href, anchor_text in document.get("anchors", []):
+            link = urllib.parse.urljoin(final_url, href)
+            if not href or link in seen:
+                continue
+            seen.add(link)
+            if not is_authoritative_url(link, security.official_domains):
+                # Cross-domain links are never followed, even if their text
+                # looks like a press release or search result.
+                if anchor_text and self._is_ir_detail_url(link):
+                    bundle.gaps.append(f"IR 证据拒绝：{link}")
+                continue
+            if anchor_text and self._is_ir_detail_url(link):
+                links.append(link)
+            if len(links) >= self._ir_detail_limit():
+                break
+        if not links:
+            bundle.gaps.append(f"IR HTML列表未发现明确详情链接：{security.symbol} {final_url}")
+            return 0
+        count = 0
+        for link in links:
+            try:
+                detail_text, detail_url = self._fetch(link, security.official_domains)
+            except Exception as exc:
+                bundle.gaps.append(f"IR 详情页缺口：{security.symbol} {link}（{exc}）")
+                continue
+            detail = _parse_ir_html(detail_text)
+            title = str(detail.get("title") or "IR update")
+            body = str(detail.get("body") or "")
+            if not body and title == "IR update":
+                bundle.gaps.append(f"IR 详情正文缺口：{security.symbol} {detail_url}")
+                continue
+            raw = json.dumps(
+                {
+                    "detail_url": detail_url,
+                    "detail": detail_text[:120_000],
+                    "listing_url": final_url,
+                    "listing": text[:30_000],
+                    "truncated": len(detail_text) > 120_000 or len(text) > 30_000,
+                },
+                ensure_ascii=False,
+            )
+            if self._add_ir_evidence(
+                security,
+                bundle,
+                url=detail_url,
+                title=title,
+                body=body,
+                published=detail.get("published"),
+                published_precision=str(detail.get("published_precision") or "unknown"),
+                raw=raw,
+                as_of_date=as_of_date,
+                lookback_days=lookback_days,
+            ):
+                count += 1
+        return count
+
+    def _ir_detail_limit(self) -> int:
+        try:
+            return min(10, max(1, int(self.config.source_policy.get("ir_detail_limit", 10))))
+        except (TypeError, ValueError):
+            return 10
+
     def _collect_feeds(self, security: Security, bundle: EvidenceBundle, *, as_of_date: date) -> None:
         count = 0
+        blocked = False
+        error_details: list[str] = []
+        try:
+            # A seven-day window is sufficient for same-day attribution but
+            # drops still-live catalysts disclosed weeks earlier.  Keep 90
+            # days by default; attribution later applies its own session-time
+            # cutoff, so this does not turn old notices into daily causes.
+            lookback_days = max(1, int(self.config.source_policy.get("ir_lookback_days", 90)))
+        except (TypeError, ValueError):
+            lookback_days = 90
         for feed_url in security.ir_feeds:
             try:
                 text, final_url = self._fetch(feed_url, security.official_domains)
+            except Exception as exc:
+                detail = str(exc)
+                blocked = blocked or bool(re.search(r"\b(?:403|429)\b|access denied|forbidden", detail, flags=re.I))
+                error_details.append(detail)
+                bundle.gaps.append(f"IR 来源缺口：{security.symbol} {feed_url}（{exc}）")
+                continue
+
+            # Prefer the strict XML parser when the source is RSS/Atom.  If a
+            # vendor returns an HTML error page or a JSON endpoint with a
+            # misleading text/html content type, fall through to the matching
+            # official-list parser instead of declaring the source unusable.
+            parsed_xml = False
+            try:
                 root = ElementTree.fromstring(text)
-                for entry in root.iter():
-                    tag = entry.tag.rsplit("}", 1)[-1].lower()
-                    if tag not in {"item", "entry"}:
-                        continue
-                    fields = {child.tag.rsplit("}", 1)[-1].lower(): (child.text or "").strip() for child in entry}
+                xml_entries = [
+                    entry
+                    for entry in root.iter()
+                    if entry.tag.rsplit("}", 1)[-1].lower() in {"item", "entry"}
+                ]
+            except (ElementTree.ParseError, ValueError):
+                xml_entries = []
+            if xml_entries:
+                parsed_xml = True
+                for entry in xml_entries:
+                    fields = {
+                        child.tag.rsplit("}", 1)[-1].lower(): "".join(child.itertext()).strip()
+                        for child in entry
+                    }
                     link_node = next(
                         (child for child in entry if child.tag.rsplit("}", 1)[-1].lower() == "link"),
                         None,
                     )
-                    link = fields.get("link") or (link_node.attrib.get("href", "") if link_node is not None else "") or feed_url
+                    link = fields.get("link") or (link_node.attrib.get("href", "") if link_node is not None else "") or final_url
+                    link = urllib.parse.urljoin(final_url, link)
                     published, published_precision = _parse_published(
                         fields.get("pubdate") or fields.get("published") or fields.get("updated")
                     )
                     title = fields.get("title") or "IR update"
-                    full_snippet = title[:2000]
-                    future = _forward_event(full_snippet, as_of_date)
-                    identifiers = (security.symbol, title)
-                    if not is_authoritative_url(link, security.official_domains):
-                        bundle.gaps.append(f"IR 证据拒绝：{link}")
-                        continue
-                    item = Evidence(
-                        id=_evidence_id(link, published, identifiers),
-                        url=link,
-                        publisher=security.name,
-                        published_at=published,
-                        retrieved_at=datetime.now(timezone.utc),
-                        snippet=full_snippet,
-                        identifiers=identifiers,
-                        source_kind="company_ir",
-                        event_date=future[0] if future else None,
-                        event_precision=future[2] if future else None,
-                        event_label=future[3] if future else None,
-                        event_window_end=future[1] if future else None,
-                        event_status=future[4] if future else None,
-                        published_precision=published_precision,
+                    body = "；".join(
+                        part for part in (fields.get("description", ""), fields.get("encoded", ""), fields.get("content", "")) if part
                     )
-                    bundle.add(item, raw=text)
-                    count += 1
-            except Exception as exc:
-                bundle.gaps.append(f"IR RSS 缺口：{security.symbol} {feed_url}（{exc}）")
-        bundle.statuses.append(SourceStatus("ir", "ok" if count else "no_data", count))
+                    if self._add_ir_evidence(
+                        security,
+                        bundle,
+                        url=link,
+                        title=title,
+                        body=body,
+                        published=published,
+                        published_precision=published_precision,
+                        raw=text,
+                        as_of_date=as_of_date,
+                        lookback_days=lookback_days,
+                    ):
+                        count += 1
+            if parsed_xml:
+                continue
+
+            stripped = text.lstrip("\ufeff \t\r\n")
+            if stripped.startswith(("{", "[")):
+                count += self._collect_ir_json(
+                    security,
+                    bundle,
+                    text=text,
+                    final_url=final_url,
+                    as_of_date=as_of_date,
+                    lookback_days=lookback_days,
+                )
+            elif stripped.startswith("<"):
+                count += self._collect_ir_html(
+                    security,
+                    bundle,
+                    text=text,
+                    final_url=final_url,
+                    as_of_date=as_of_date,
+                    lookback_days=lookback_days,
+                )
+            else:
+                bundle.gaps.append(f"IR 来源格式不支持：{security.symbol} {final_url}")
+        status = "ok" if count else ("blocked" if blocked else "no_data")
+        detail = "; ".join(error_details[:2]) if error_details else None
+        bundle.statuses.append(SourceStatus("ir", status, count, detail))
 
     def _collect_regulator_feeds(self, bundle: EvidenceBundle) -> None:
         feeds = self.config.source_policy.get("regulator_feeds", [])
@@ -565,12 +1191,44 @@ class EvidenceCollector:
 
         rows = self.config.source_policy.get("calendar_files", [])
         if not isinstance(rows, list):
+            bundle.gaps.append("官方会议日历配置缺口：source_policy.calendar_files 必须是路径或事件字典列表")
             rows = []
         count = 0
         allowed = tuple(self.config.source_policy.get("calendar_domains", ())) or tuple(KNOWN_OFFICIAL_DOMAINS)
-        for raw in rows:
-            if not isinstance(raw, dict):
+        events: list[dict[str, Any]] = []
+        repo_root = Path(__file__).resolve().parents[2]
+        for configured in rows:
+            if isinstance(configured, dict):
+                # Keep compatibility with the original inline event form.
+                if isinstance(configured.get("events"), list):
+                    events.extend(item for item in configured["events"] if isinstance(item, dict))
+                else:
+                    events.append(configured)
                 continue
+            if not isinstance(configured, str) or not configured.strip():
+                bundle.gaps.append(f"官方会议日历配置缺口：无效路径/事件 {configured!r}")
+                continue
+            requested = Path(configured.strip())
+            candidates = [requested] if requested.is_absolute() else [Path.cwd() / requested, repo_root / requested]
+            calendar_path = next((candidate for candidate in candidates if candidate.is_file()), None)
+            if calendar_path is None:
+                bundle.gaps.append(f"官方会议日历文件缺失：{configured}")
+                continue
+            try:
+                payload = json.loads(calendar_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                bundle.gaps.append(f"官方会议日历文件读取失败：{calendar_path}（{exc}）")
+                continue
+            file_events = payload.get("events") if isinstance(payload, dict) else payload
+            if not isinstance(file_events, list):
+                bundle.gaps.append(f"官方会议日历文件缺少 events 列表：{calendar_path}")
+                continue
+            invalid_count = sum(1 for item in file_events if not isinstance(item, dict))
+            if invalid_count:
+                bundle.gaps.append(f"官方会议日历文件含无效事件：{calendar_path}（{invalid_count} 条）")
+            events.extend(item for item in file_events if isinstance(item, dict))
+
+        for raw in events:
             url = str(raw.get("url") or "")
             if not is_authoritative_url(url, allowed):
                 bundle.gaps.append(f"官方会议日历拒绝：{url or '<empty url>'} 不在允许域名内")
@@ -594,15 +1252,16 @@ class EvidenceCollector:
                 identifiers=identifiers,
                 source_kind="official_calendar",
                 event_date=event_date,
-                event_precision=str(raw.get("precision") or "day"),
+                event_precision=str(raw.get("event_precision") or raw.get("precision") or "day"),
                 event_label=str(raw.get("label") or "官方会议"),
                 event_window_end=event_end,
-                event_status=str(raw.get("status") or "confirmed"),
+                event_status=str(raw.get("event_status") or raw.get("status") or "confirmed"),
                 published_precision=str(raw.get("published_precision") or precision),
             )
             bundle.add(item, raw=json.dumps(raw, ensure_ascii=False))
             count += 1
-        bundle.statuses.append(SourceStatus("official_calendar", "ok" if count else "not_configured", count))
+        status = "ok" if count else ("error" if bundle.gaps else "not_configured")
+        bundle.statuses.append(SourceStatus("official_calendar", status, count))
 
     def _collect_clinicaltrial(self, security: Security, nct_id: str, bundle: EvidenceBundle) -> None:
         nct_id = nct_id.strip().upper()

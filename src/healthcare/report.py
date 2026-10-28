@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -46,6 +47,46 @@ def _display_published(item: dict[str, Any]) -> str:
     if precision == "minute":
         return text[:16].replace("T", " ")
     return text
+
+
+_PRECISION_LABELS = {
+    "day": "明确日期",
+    "minute": "分钟",
+    "timestamp": "时分秒",
+    "date": "日期（无时分）",
+    "date_range": "日期区间",
+    "month": "月份窗口",
+    "quarter": "季度窗口",
+    "half": "半年窗口",
+    "year": "年度窗口",
+    "estimated_milestone": "预计里程碑",
+    "unknown": "未知精度",
+}
+
+
+def _precision_label(value: Any) -> str:
+    text = str(value or "unknown")
+    return _PRECISION_LABELS.get(text, text)
+
+
+def _evidence_excerpt(item: dict[str, Any], limit: int = 110) -> str:
+    """Return a short factual opening without replacing the stored evidence."""
+
+    text = re.sub(r"\s+", " ", str(item.get("snippet") or "")).strip()
+    if not text:
+        return "无可用摘要"
+    parts = [part.strip() for part in re.split(r"[；;。.!?]+", text) if part.strip()]
+    for part in parts:
+        if re.search(r"免责声明|法律声明|风险提示", part) and len(parts) > 1:
+            continue
+        text = part
+        break
+    text = text.replace("|", "／")
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _md_link(label: str, url: str) -> str:
+    return f"[{str(label or '原文').replace('|', '／')}](<{url}>)"
 
 
 def build_report(
@@ -119,6 +160,14 @@ def build_report(
             session_notes[market] = f"本地当日尚无新收盘行情，展示最近已完成交易日 {value.session_date.isoformat()}（休市或尚未收盘）"
     attributions = attribute_moves(market_data.quotes, evidence, sessions) if sessions else ()
     catalysts = extract_catalysts(evidence, as_of.date())
+    quote_source_counts: dict[str, int] = {}
+    for quote in market_data.quotes:
+        source = str(quote.source or "unknown")
+        quote_source_counts[source] = quote_source_counts.get(source, 0) + 1
+    benchmark_source_counts: dict[str, int] = {}
+    for quote in market_data.benchmark_quotes:
+        source = str(quote.source or "unknown")
+        benchmark_source_counts[source] = benchmark_source_counts.get(source, 0) + 1
     coverage_pct = market_data.coverage_pct
     calendar_fallback = any(value.source == "weekday_fallback" for value in sessions.values())
     if not aligned:
@@ -229,6 +278,11 @@ def build_report(
             for q in market_data.benchmark_quotes
         ],
         "quotes": market_data.quotes,
+        "market_data_sources": {
+            "quote_counts": dict(sorted(quote_source_counts.items())),
+            "benchmark_counts": dict(sorted(benchmark_source_counts.items())),
+            "gaps": list(market_data.gaps),
+        },
         "attributions": attributions,
         "focus_attributions": focus_attributions,
         "post_close_events": post_close_events,
@@ -245,12 +299,16 @@ def build_report(
 
 
 def render_markdown(report: dict[str, Any]) -> str:
+    source_summary = report.get("market_data_sources", {})
+    source_counts = source_summary.get("quote_counts", {})
+    source_text = "；".join(f"{source}×{count}" for source, count in source_counts.items()) or "无成功行情来源"
     lines = [
         f"# 医药行业每日复盘（{report['as_of'][:10]}）",
         "",
         f"- 复盘范围：`{report['session']}`；报告状态：`{report.get('status', 'unknown')}`；数据质量：`{report['data_quality']}`",
         f"- 对齐交易日：{', '.join(f'{k}={v}' for k, v in report['market_dates'].items())}",
         f"- 行情覆盖：{report['coverage']['covered']}/{report['coverage']['requested']}（{report['coverage']['coverage_pct']:.1f}%）",
+        f"- 行情实际来源（适配器统计，不代表交易所官方）：{source_text}",
         f"- 事件证据覆盖：{report['coverage']['events']['covered']}/{report['coverage']['events']['requested']}（{report['coverage']['events']['coverage_pct']:.1f}%）；未来催化剂覆盖：{report['coverage']['catalysts']['covered']}/{report['coverage']['catalysts']['requested']}（{report['coverage']['catalysts']['coverage_pct']:.1f}%）",
         "",
         "## 涨跌榜与子板块",
@@ -282,28 +340,41 @@ def render_markdown(report: dict[str, Any]) -> str:
         lines.append("- 未发现满足阈值的异常成交，或成交量数据缺失。")
     evidence_index = {row["id"]: row for row in report.get("evidence", [])}
     lines += ["", "## 重点异动事件相关性提示", "", "| 标的 | 标签 | 说明 | 原文 |", "|---|---|---|---|"]
-    displayed_attributions = report.get("focus_attributions") or report.get("attributions", [])[:20]
-    for row in displayed_attributions:
+    def append_attribution(row: dict[str, Any], label: str | None = None) -> bool:
+        evidence_ids = tuple(str(value) for value in row.get("evidence_ids", []) if str(value))
+        matched = [evidence_index[evidence_id] for evidence_id in evidence_ids if evidence_id in evidence_index]
+        if not matched:
+            return False
+        facts = []
         links = []
-        for evidence_id in row.get("evidence_ids", []):
-            item = evidence_index.get(evidence_id)
-            if item and item.get("url"):
-                links.append(f"[{item.get('publisher', '原文')}]({item['url']})")
-        lines.append(f"| {row['symbol']} | {row['status']} | {row['note']} | {'; '.join(links) or '—'} |")
-    for row in report.get("post_close_events", []):
-        links = []
-        for evidence_id in row.get("evidence_ids", []):
-            item = evidence_index.get(evidence_id)
-            if item and item.get("url"):
-                links.append(f"[{item.get('publisher', '原文')}]({item['url']})")
-        lines.append(f"| {row['symbol']} | 盘后消息 | {row['note']} | {'; '.join(links) or '—'} |")
-    for row in report.get("unknown_time_events", []):
-        links = []
-        for evidence_id in row.get("evidence_ids", []):
-            item = evidence_index.get(evidence_id)
-            if item and item.get("url"):
-                links.append(f"[{item.get('publisher', '原文')}]({item['url']})")
-        lines.append(f"| {row['symbol']} | 时点不明 | {row['note']} | {'; '.join(links) or '—'} |")
+        for item in matched[:3]:
+            facts.append(f"证据：{_evidence_excerpt(item)}（发布时间：{_display_published(item)}）")
+            if item.get("url"):
+                links.append(_md_link(item.get("publisher", "原文"), item["url"]))
+        note = str(row.get("note") or "")
+        detail = "<br>".join(part for part in [note, *facts] if part)
+        lines.append(
+            f"| {row.get('symbol', '—')} | {label or row.get('status', '—')} | {detail or '—'} | {'; '.join(links) or '—'} |"
+        )
+        return True
+
+    focus_rows = report.get("focus_attributions", [])
+    normal_focus_rows = [
+        row for row in focus_rows if row.get("timing") not in {"post_close", "unknown_time"}
+    ]
+    rendered_count = sum(append_attribution(row) for row in normal_focus_rows)
+    focused_symbols = {str(row.get("symbol")) for row in focus_rows}
+    for row in [*report.get("post_close_events", []), *report.get("unknown_time_events", [])]:
+        if str(row.get("symbol")) not in focused_symbols:
+            continue
+        evidence_ids = tuple(str(value) for value in row.get("evidence_ids", []) if str(value))
+        label = "盘后消息" if row in report.get("post_close_events", []) else "时点不明"
+        rendered_count += int(append_attribution(row, label=label))
+    if rendered_count == 0:
+        lines.append("- 聚焦异动暂无匹配官方证据，未作原因推断。")
+    unmatched_focus = sum(1 for row in focus_rows if not row.get("evidence_ids"))
+    if unmatched_focus:
+        lines.append(f"- 另有 {unmatched_focus} 个聚焦标的未找到匹配官方证据，未作原因推断。")
     lines += ["", "## 未来催化剂", ""]
     if report["catalysts"]:
         for row in report["catalysts"]:
@@ -313,16 +384,21 @@ def render_markdown(report: dict[str, Any]) -> str:
             for evidence_id in row.get("evidence_ids", []):
                 item = evidence_index.get(evidence_id)
                 if item and item.get("url"):
-                    links.append(f"[{item.get('publisher', '原文')}]({item['url']})")
-            lines.append(f"- `{row['window']}` {row['symbol']}：{row['label']}，日期/窗口 `{event_date}`，精度 `{row.get('precision', 'unknown')}`，{'；'.join(links) or '无可点击原文'}{note}")
+                    links.append(_md_link(item.get("publisher", "原文"), item["url"]))
+            lines.append(f"- `{row['window']}` {row['symbol']}：{row['label']}，日期/窗口 `{event_date}`，精度 `{_precision_label(row.get('precision', 'unknown'))}`，{'；'.join(links) or '无可点击原文'}{note}")
     else:
         lines.append("- 未找到未来90天内带有官方明确日期或季度窗口的事件；不推断 PDUFA 日期。")
     lines += ["", "## 来源状态与缺口", ""]
     for status in report["source_status"]:
         detail = f"：{status['detail']}" if status.get("detail") else ""
         lines.append(f"- `{status['source']}`：{status['status']}，记录 {status['count']}{detail}")
-    for gap in report["source_gaps"]:
-        lines.append(f"- 缺口：{gap}")
+    gaps = report.get("source_gaps", [])
+    if gaps:
+        lines += [f"<details><summary>来源缺口（{len(gaps)}条，点击展开）</summary>", ""]
+        lines.extend(f"- 缺口：{gap}" for gap in gaps)
+        lines += ["", "</details>"]
+    else:
+        lines.append("- 无来源缺口。")
     lines += ["", "## 可核验事件原文", "", "| 证据 | 发布方 | 发布时间 | 摘要 |", "|---|---|---|---|"]
     for item in report.get("evidence", [])[:50]:
         published = _display_published(item)

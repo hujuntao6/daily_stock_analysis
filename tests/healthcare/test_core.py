@@ -276,7 +276,8 @@ class HealthcareCoreTests(TestCase):
             event_date=date(2026, 11, 30), event_precision="day", event_label="预计主要完成日期", event_status="estimated",
         )
         catalysts = extract_catalysts((quarter, trial), date(2026, 10, 27))
-        self.assertTrue(any(item.precision == "quarter" and item.window_start == date(2026, 10, 28) for item in catalysts))
+        self.assertTrue(any(item.precision == "quarter" and item.window_start == date(2026, 10, 1) and item.window_end == date(2026, 12, 31) for item in catalysts))
+        self.assertTrue(any(item.precision == "quarter" and item.window != "未来7天" for item in catalysts))
         self.assertTrue(any("不代表读出" in item.note for item in catalysts))
         self.assertTrue(all(item.event_date is None or item.precision == "day" for item in catalysts))
 

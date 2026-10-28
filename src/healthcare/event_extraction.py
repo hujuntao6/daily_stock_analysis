@@ -29,10 +29,15 @@ _FORWARD_CUE = re.compile(
 )
 _TOPIC_CUE = re.compile(
     r"(?:clinical|trial|readout|data|pdufa|approval|action date|regulat|drug|therapy|medicine|"
-    r"earnings|results|conference|meeting|milestone|业绩|财报|临床|试验|数据|批准|审评|药|药物|会议|里程碑|读出)",
+    r"earnings|results|conference|meeting|milestone|业绩|财报|临床|试验|数据|批准|获批|获准|批件|上市|审评|药|药物|会议|里程碑|读出)",
     re.IGNORECASE,
 )
-_PAST_CUE = re.compile(r"(?:already reported|already published|was reported|were reported|completed|已公布|已发布|已披露|已经完成)", re.IGNORECASE)
+_PAST_CUE = re.compile(
+    r"(?:already reported|already published|was reported|were reported|completed|"
+    r"已公布|已发布|已披露|已经完成|已(?:经)?获(?:得)?|已(?:经)?取得|已(?:经)?批准|"
+    r"已获批|已获准|报告期|财务期间|上季度|历史数据)",
+    re.IGNORECASE,
+)
 _PDUFA_CUE = re.compile(r"\b(?:pdufa|target action date)\b|目标行动日期", re.IGNORECASE)
 _ISO = re.compile(r"(?<!\d)(20\d{2})[-/.](\d{1,2})[-/.](\d{1,2})(?!\d)")
 _CN_DAY = re.compile(r"(?<!\d)(20\d{2})年(\d{1,2})月(\d{1,2})日")
@@ -44,6 +49,7 @@ _EN_DAY = re.compile(
     re.IGNORECASE,
 )
 _Q = re.compile(r"\bQ([1-4])\s*(20\d{2})\b|(?<!\d)(20\d{2})\s*(?:年\s*)?Q([1-4])(?!\d)", re.IGNORECASE)
+_CN_QUARTER = re.compile(r"(?<!\d)(20\d{2})年(?:第)?([一二三四1-4])季度")
 _H = re.compile(r"\bH([12])\s*(20\d{2})\b|(?<!\d)(20\d{2})\s*(?:年\s*)?H([12])(?!\d)", re.IGNORECASE)
 _YEAR = re.compile(r"(?<!\d)(20\d{2})年度?(?!\d)")
 
@@ -56,8 +62,9 @@ def _valid(year: int, month: int, day: int) -> date | None:
 
 
 def _context(text: str, start: int, end: int) -> str:
-    left = max(text.rfind("。", 0, start), text.rfind(".", 0, start), text.rfind(";", 0, start))
-    right_candidates = [position for position in (text.find("。", end), text.find(".", end), text.find(";", end)) if position >= 0]
+    boundaries = ("。", ".", ";", "；", "\n")
+    left = max((text.rfind(mark, 0, start) for mark in boundaries), default=-1)
+    right_candidates = [position for mark in boundaries if (position := text.find(mark, end)) >= 0]
     right = min(right_candidates) if right_candidates else min(len(text), end + 100)
     return text[left + 1 : right].strip()
 
@@ -107,6 +114,15 @@ def extract_forward_event(text: str, as_of: date) -> ForwardEvent | None:
         month = (quarter - 1) * 3 + 1
         end_month = month + 2
         candidates.append((date(year, month, 1), date(year, end_month, monthrange(year, end_month)[1]), "quarter", f"{year}年Q{quarter}", match.start(), match.end()))
+    for match in _CN_QUARTER.finditer(text):
+        year = int(match.group(1))
+        quarter_token = match.group(2)
+        quarter = {"一": 1, "二": 2, "三": 3, "四": 4}.get(quarter_token)
+        if quarter is None:
+            quarter = int(quarter_token)
+        month = (quarter - 1) * 3 + 1
+        end_month = month + 2
+        candidates.append((date(year, month, 1), date(year, end_month, monthrange(year, end_month)[1]), "quarter", f"{year}年第{quarter}季度", match.start(), match.end()))
     for match in _H.finditer(text):
         if match.group(1):
             half, year = int(match.group(1)), int(match.group(2))
@@ -114,7 +130,7 @@ def extract_forward_event(text: str, as_of: date) -> ForwardEvent | None:
             year, half = int(match.group(3)), int(match.group(4))
         start_month, end_month = (1, 6) if half == 1 else (7, 12)
         candidates.append((date(year, start_month, 1), date(year, end_month, monthrange(year, end_month)[1]), "half", f"{year}年H{half}", match.start(), match.end()))
-    if not (_Q.search(text) or _H.search(text) or _CN_MONTH.search(text) or _CN_DAY.search(text) or _EN_DAY.search(text)):
+    if not (_Q.search(text) or _CN_QUARTER.search(text) or _H.search(text) or _CN_MONTH.search(text) or _CN_DAY.search(text) or _EN_DAY.search(text)):
         for match in _YEAR.finditer(text):
             year = int(match.group(1))
             candidates.append((date(year, 1, 1), date(year, 12, 31), "year", f"{year}年度", match.start(), match.end()))

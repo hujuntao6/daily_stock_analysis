@@ -12,6 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] 新增 A/H/美股医药行业日报入口，保留行情覆盖、官方披露证据、事件时点和未来催化剂日期精度；配置与数据边界见 `docs/HEALTHCARE_DEPLOYMENT.md`。
 - [改进] 医药部署采用北京时间 07:30 美股晨报与 18:30 A/H 晚报，原通用股票分析改为手动入口，避免重复定时推送。
 - [测试] 新增医药日报离线证据、交易日与数据质量校验，并在部署流程保存报告与证据产物。
+- [修复] 官方 IR、交易所、SEC 和监管来源在保守日期提取失败时不再回退到宽松年份正则；历史财务期间、已发生的批准/临床结果和无关的未来措辞不会被伪装成催化剂。
+- [修复] 月、季度和年度催化剂保留原始窗口精度，不再把已开始的窗口截断为“未来7天”；新增中文季度和代表性公告/业绩会议回归测试。
+- [文档] 明确 SMTP 模式/端口留空时的安全默认值，并说明 `config/healthcare-calendar.json` 由 `source_policy.calendar_files` 载入；行业会议节点不等同于公司读出承诺。
 
 - [修复] 自选及其他无关配置保存不再被已有 LLM 渠道或模型错误阻断，模型相关修改仍校验完整依赖；仅更新自选时保留运行时单例与容器环境覆盖，并补齐增删、删空和校验回归。凡本次保存会启用 Agent 路径的，同样校验完整模型依赖：切到 LiteLLM Agent 后端（`AGENT_BACKEND` / `AGENT_GENERATION_BACKEND` 解析为 litellm）、开启 Agent 分析（`AGENT_MODE=true`）、或配置了非 `all` 的 `AGENT_SKILLS`——后两者走普通分析的 Agent 分支，自带 `LLMToolAdapter`，不受 `AGENT_BACKEND` 决定。仅关闭 `AGENT_MODE`、将 `AGENT_SKILLS` 设为 `all` 或空值、以及无关键保存仍不受 LLM 配置影响；显式保存或导入已退役的 `codex_app_server` 仍被拒绝。
 - [改进] 移除实验性 Codex App Server 问股后端及专属探针、取消与启动链；旧配置明确提示退役并可主动修正，保留默认 LiteLLM、会话接受事务及独立 Codex CLI 报告。

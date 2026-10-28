@@ -84,6 +84,37 @@ class ForwardEventExtractionTests(TestCase):
         self.assertEqual(item.event_window_end, date(2027, 12, 31))
         self.assertEqual(item.precision, "year")
 
+    def test_historical_chinese_financial_quarter_is_not_a_future_window(self):
+        self.assertIsNone(
+            extract_forward_event(
+                "2026年第三季度财务报告已发布；公司将持续推进研发。",
+                self.AS_OF,
+            )
+        )
+
+    def test_approval_announcement_is_not_promoted_by_unrelated_forward_cue(self):
+        self.assertIsNone(
+            extract_forward_event(
+                "公司于2026年10月20日已获临床批件，后续将按计划商业化。",
+                self.AS_OF,
+            )
+        )
+
+    def test_future_earnings_meeting_keeps_explicit_day_precision(self):
+        item = extract_forward_event(
+            "公司预计将于2026年11月15日召开业绩说明会。",
+            self.AS_OF,
+        )
+        self.assertIsNotNone(item)
+        assert item is not None
+        self.assertEqual((item.event_date, item.event_window_end, item.precision), (date(2026, 11, 15), date(2026, 11, 15), "day"))
+
+    def test_chinese_quarter_readout_is_kept_as_a_quarter_window(self):
+        item = extract_forward_event("公司预计2026年第四季度读出临床数据。", self.AS_OF)
+        self.assertIsNotNone(item)
+        assert item is not None
+        self.assertEqual((item.event_date, item.event_window_end, item.precision), (date(2026, 10, 1), date(2026, 12, 31), "quarter"))
+
 
 class CatalystEvidenceBindingTests(TestCase):
     AS_OF = date(2026, 10, 27)
@@ -113,6 +144,68 @@ class CatalystEvidenceBindingTests(TestCase):
     def test_ah_body_future_pdufa_is_not_blocked_by_notice_date(self):
         catalysts = extract_catalysts((self._evidence("hkex"),), self.AS_OF)
         self.assertTrue(any(item.event_date == date(2026, 12, 1) for item in catalysts))
+
+    def test_official_filing_does_not_fallback_to_historical_year(self):
+        item = Evidence(
+            "history",
+            "https://www.cninfo.com.cn/example",
+            "巨潮资讯",
+            datetime(2026, 10, 27, 10, tzinfo=ZoneInfo("Asia/Shanghai")),
+            self.RETRIEVED,
+            "2026年第三季度财务报告已发布；公司将持续推进研发。",
+            ("ABC",),
+            source_kind="cninfo",
+            event_date=self.AS_OF,
+            event_precision="day",
+        )
+        self.assertEqual(extract_catalysts((item,), self.AS_OF), ())
+
+    def test_period_catalyst_keeps_original_window_and_not_future_seven_days(self):
+        item = Evidence(
+            "period",
+            "https://sec.gov/example",
+            "SEC",
+            None,
+            self.RETRIEVED,
+            "公司预计2026年Q4披露临床数据。",
+            ("ABC",),
+            source_kind="sec_filing",
+        )
+        catalysts = extract_catalysts((item,), self.AS_OF)
+        self.assertEqual(len(catalysts), 1)
+        catalyst = catalysts[0]
+        self.assertEqual((catalyst.window_start, catalyst.window_end), (date(2026, 10, 1), date(2026, 12, 31)))
+        self.assertNotEqual(catalyst.window, "未来7天")
+
+    def test_future_month_window_uses_conservative_end_anchor(self):
+        item = Evidence(
+            "month",
+            "https://sec.gov/example-month",
+            "SEC",
+            None,
+            self.RETRIEVED,
+            "公司预计2026年11月披露临床结果。",
+            ("ABC",),
+            source_kind="sec_filing",
+        )
+        catalysts = extract_catalysts((item,), self.AS_OF)
+        self.assertEqual(len(catalysts), 1)
+        self.assertEqual(catalysts[0].window, "月份窗口（未来90天）")
+
+    def test_year_window_crossing_ninety_days_is_date_pending(self):
+        item = Evidence(
+            "year",
+            "https://sec.gov/example-year",
+            "SEC",
+            None,
+            self.RETRIEVED,
+            "公司预计2027年度披露业绩结果。",
+            ("ABC",),
+            source_kind="sec_filing",
+        )
+        catalysts = extract_catalysts((item,), self.AS_OF)
+        self.assertEqual(len(catalysts), 1)
+        self.assertEqual(catalysts[0].window, "年度窗口（窗口跨越90天，日期待定）")
 
 
 if __name__ == "__main__":

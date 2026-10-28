@@ -26,6 +26,25 @@ _FORWARD_CUE = re.compile(
     r"expected|expect|planned|plan(?:ned)?|target(?:ed)?|scheduled|anticipat|will|forecast)",
     re.IGNORECASE,
 )
+_STRICT_SOURCE_KINDS = frozenset(
+    {
+        "sec_filing",
+        "sec_exhibit",
+        "company_ir",
+        "company_filing",
+        "cninfo",
+        "hkex",
+        "ah_announcement",
+        "exchange_announcement",
+        "regulator_rss",
+    }
+)
+_PERIOD_LABELS = {
+    "month": "月份窗口",
+    "quarter": "季度窗口",
+    "half": "半年窗口",
+    "year": "年度窗口",
+}
 
 
 def _quarter_window(year: int, quarter: int) -> tuple[date, date]:
@@ -54,6 +73,22 @@ def _window(days: int) -> str:
     return "超过90天"
 
 
+def _period_window(start: date, end: date, precision: str, as_of: date) -> str:
+    """Describe a period without turning its clipped start into a day event."""
+
+    if precision == "day":
+        return _window(max(0, (start - as_of).days))
+    # Period/month/quarter/year dates are windows, not exact event dates. Use
+    # the period end as the conservative anchor even when the period has not
+    # started yet; using the start would turn a November window into a false
+    # "未来7天" promise as of late October.
+    distance = max(0, (end - as_of).days)
+    label = _PERIOD_LABELS.get(precision, "日期窗口")
+    if distance > 90:
+        return f"{label}（窗口跨越90天，日期待定）"
+    return f"{label}（{_window(distance)}）"
+
+
 def _identifier(item: Evidence) -> str:
     return next(
         (identifier for identifier in item.identifiers if identifier and not identifier.upper().startswith("NCT")),
@@ -64,12 +99,17 @@ def _identifier(item: Evidence) -> str:
 def _parsed_window(item: Evidence, as_of: date) -> tuple[date | None, date | None, str, str]:
     """Return start/end/precision/label without making a quarter a day."""
 
-    if item.source_kind in {"sec_filing", "sec_exhibit", "company_ir", "cninfo", "hkex", "ah_announcement"}:
+    source_kind = str(item.source_kind or "").lower()
+    if source_kind in _STRICT_SOURCE_KINDS:
         from .event_extraction import extract_forward_event
 
         row = extract_forward_event(item.snippet, as_of)
         if row:
             return row.event_date, row.event_window_end, row.precision, row.label
+        # Filing/announcement event_date is normally the publication date.
+        # Do not fall through to the generic text regex: an unrelated "将"
+        # plus a historical year must never become a future catalyst.
+        return None, None, "unknown", item.event_label or (item.snippet or "").split(";", 1)[0][:120]
 
     if item.event_date:
         precision = item.event_precision or "day"
@@ -115,28 +155,27 @@ def extract_catalysts(evidence: Iterable[Evidence], as_of: date) -> tuple[Cataly
         start, end, precision, label = _parsed_window(item, as_of)
         if start is None or end is None or end <= as_of or start > horizon:
             continue
-        effective_start = max(start, as_of + timedelta(days=1))
-        effective_end = min(end, horizon)
-        if effective_start > effective_end:
-            continue
         note = ""
         if item.source_kind.startswith("clinicaltrials") and item.event_date:
             note = "预计试验里程碑，不代表读出"
             if item.event_status == "actual":
                 note += "；注册记录标记为 ACTUAL，但不等于数据读出"
-        days = (effective_start - as_of).days
-        event_date = effective_start if precision == "day" and effective_start == effective_end else None
+        window = _period_window(start, end, precision, as_of)
+        event_date = start if precision == "day" and start == end else None
         catalysts.append(
             Catalyst(
                 symbol=_identifier(item),
                 label=label or "官方事件",
-                window=_window(days),
+                window=window,
                 event_date=event_date,
                 precision=precision,
                 evidence_ids=(item.id,),
                 note=note,
-                window_start=effective_start,
-                window_end=effective_end,
+                # Preserve the source's original precision window.  Clipping
+                # a quarter/year to ``as_of + 1`` creates a fictitious exact
+                # future date in the report.
+                window_start=start,
+                window_end=end,
             )
         )
     deduped: dict[tuple[str, date | None, date | None, str], Catalyst] = {}
