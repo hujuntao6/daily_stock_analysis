@@ -1,0 +1,10 @@
+# Optional dependencies used by the healthcare extension.  The base project
+# remains the source of truth for its own requirements.txt.
+yfinance>=0.2.54
+akshare>=1.19
+pandas>=2.0
+exchange-calendars>=4.13
+requests>=2.31
+feedparser>=6.0
+pypdf>=5.0
+markdown2>=2.5

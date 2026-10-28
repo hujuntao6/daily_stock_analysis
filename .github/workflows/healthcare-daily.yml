@@ -1,0 +1,274 @@
+name: Healthcare daily review
+
+on:
+  schedule:
+    # 23:30 UTC = 07:30 Asia/Shanghai on the following day.
+    # The US job is aligned by the report's exchange calendar and therefore
+    # runs Tuesday-Saturday Beijing time for Monday-Friday US sessions.
+    - cron: "30 23 * * 1-5"
+    # 10:30 UTC = 18:30 Asia/Shanghai on the same day.
+    - cron: "30 10 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      session:
+        description: "Report session"
+        required: true
+        default: "both"
+        type: choice
+        options:
+          - us
+          - ah
+          - both
+  push:
+    paths:
+      - "src/healthcare/**"
+      - "config/healthcare.json"
+      - "config/healthcare-universe.json"
+      - "config/healthcare-calendar.json"
+      - "config/healthcare-smoke.json"
+      - "scripts/healthcare_email.py"
+      - "scripts/generate_healthcare_universe.py"
+      - "scripts/healthcare_smoke_gate.py"
+      - "requirements-healthcare.txt"
+      - "tests/test_healthcare_deployment.py"
+      - "tests/fixtures/healthcare_fixture.json"
+      - "tests/healthcare/**"
+      - "docs/HEALTHCARE_DEPLOYMENT.md"
+      - ".github/workflows/healthcare-daily.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: healthcare-daily-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CONFIG: config/healthcare.json
+  REPORT_ROOT: reports/healthcare
+  PYTHONUNBUFFERED: "1"
+
+jobs:
+  offline-validation:
+    name: Offline healthcare smoke validation
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install extension dependencies
+        run: python -m pip install -r requirements-healthcare.txt pytest
+      - name: Run offline unit tests
+        run: python -m unittest discover -s tests -p 'test_healthcare_deployment.py' -v
+      - name: Run core healthcare tests when present
+        shell: bash
+        run: |
+          if find tests/healthcare -type f -name '*.py' -print -quit 2>/dev/null | grep -q .; then
+            python -m pytest --noconftest -q tests/healthcare
+          else
+            echo "No tests/healthcare files present in this checkout; extension tests still ran."
+          fi
+      - name: Generate offline US and A/H smoke reports
+        run: |
+          python -m src.healthcare --session us --config "$CONFIG" --output "$REPORT_ROOT/smoke-us" --as-of "2026-10-27T18:00:00+08:00" --fixture tests/fixtures/healthcare_fixture.json --no-email
+          python -m src.healthcare --session ah --config "$CONFIG" --output "$REPORT_ROOT/smoke-ah" --as-of "2026-10-27T18:30:00+08:00" --fixture tests/fixtures/healthcare_fixture.json --no-email
+      - name: Summarize offline smoke
+        if: always()
+        run: |
+          echo "## Offline healthcare smoke" >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          for path in sorted(Path("reports/healthcare").glob("smoke-*/healthcare_report.json")):
+              report = json.loads(path.read_text(encoding="utf-8"))
+              print(f"{path.parent.name}: data_quality={report.get('data_quality')} coverage={report.get('coverage')}")
+          PY
+      - name: Upload offline smoke reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: healthcare-offline-smoke-${{ github.run_id }}
+          path: reports/healthcare
+          if-no-files-found: warn
+          retention-days: 14
+
+  real-market-smoke:
+    name: Read-only real market smoke (small sample)
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install extension dependencies
+        run: python -m pip install -r requirements-healthcare.txt
+      - name: Run read-only US and A/H sample reports
+        shell: bash
+        env:
+          # Prefer an explicitly configured SEC User-Agent; the generic
+          # fallback contains no mailbox or other personal contact data.
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT || 'HealthcareDaily/1.0' }}
+        run: |
+          set +e
+          mkdir -p "$REPORT_ROOT/real-smoke-us" "$REPORT_ROOT/real-smoke-ah"
+          python -m src.healthcare --session us --config config/healthcare-smoke.json --output "$REPORT_ROOT/real-smoke-us" --no-email
+          us_rc=$?
+          python -m src.healthcare --session ah --config config/healthcare-smoke.json --output "$REPORT_ROOT/real-smoke-ah" --no-email
+          ah_rc=$?
+          python scripts/healthcare_smoke_gate.py --report-dir "$REPORT_ROOT/real-smoke-us" --label us
+          us_gate=$?
+          python scripts/healthcare_smoke_gate.py --report-dir "$REPORT_ROOT/real-smoke-ah" --label ah
+          ah_gate=$?
+          echo "US command=$us_rc gate=$us_gate; A/H command=$ah_rc gate=$ah_gate"
+          if [ "$us_rc" -ne 0 ] || [ "$ah_rc" -ne 0 ] || [ "$us_gate" -ne 0 ] || [ "$ah_gate" -ne 0 ]; then
+            exit 1
+          fi
+      - name: Email one-time deployment-check samples
+        if: success() && github.event_name == 'push' && contains(github.event.head_commit.message, '[deploy-check]') && !contains(github.event.head_commit.message, '[deploy-full]')
+        env:
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ secrets.EMAIL_RECEIVERS }}
+          EMAIL_SMTP_HOST: ${{ secrets.EMAIL_SMTP_HOST }}
+          EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}
+          EMAIL_SMTP_MODE: ${{ secrets.EMAIL_SMTP_MODE }}
+        run: |
+          # Reports were generated with --no-email and passed the real-market
+          # smoke gate above.  Send those exact small-sample artifacts only for
+          # the explicitly marked deployment commit; ordinary pushes never mail.
+          python scripts/healthcare_email.py --report-dir "$REPORT_ROOT/real-smoke-us" --session us --subject-prefix "[部署验收样本]"
+          python scripts/healthcare_email.py --report-dir "$REPORT_ROOT/real-smoke-ah" --session ah --subject-prefix "[部署验收样本]"
+      - name: Upload real market smoke reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: healthcare-real-smoke-${{ github.run_id }}
+          path: reports/healthcare
+          if-no-files-found: warn
+          retention-days: 14
+  us:
+    name: US morning review
+    # Scheduled US reports run only from the 23:30 UTC schedule. Manual
+    # dispatch can explicitly request us or both.
+    needs: offline-validation
+    if: >-
+      always() &&
+      (
+        (github.event_name == 'schedule' && github.event.schedule == '30 23 * * 1-5') ||
+        (github.event_name == 'workflow_dispatch' && (inputs.session == 'us' || inputs.session == 'both')) ||
+        (github.event_name == 'push' && contains(github.event.head_commit.message, '[deploy-full]'))
+      ) &&
+      (github.event_name != 'push' || needs.offline-validation.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install healthcare dependencies
+        # Keep the medical workflow independent of the upstream LLM/web/desktop
+        # stack.  Optional host DSA providers are detected at runtime; when
+        # unavailable, the report records the yfinance/SEC/CN/HK fallback.
+        run: python -m pip install -r requirements-healthcare.txt
+      - name: Generate US report
+        id: report
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT || 'HealthcareDaily/1.0' }}
+        run: |
+          mkdir -p "$REPORT_ROOT/us"
+          python -m src.healthcare --session us --config "$CONFIG" --output "$REPORT_ROOT/us"
+      - name: Email US report when configured
+        if: always()
+        env:
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ secrets.EMAIL_RECEIVERS }}
+          EMAIL_SMTP_HOST: ${{ secrets.EMAIL_SMTP_HOST }}
+          EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}
+          EMAIL_SMTP_MODE: ${{ secrets.EMAIL_SMTP_MODE }}
+        run: python scripts/healthcare_email.py --report-dir "$REPORT_ROOT/us" --session us
+      - name: Publish run summary
+        if: always()
+        run: |
+          echo "## US healthcare review" >> "$GITHUB_STEP_SUMMARY"
+          if [ -d "$REPORT_ROOT/us" ]; then
+            find "$REPORT_ROOT/us" -maxdepth 1 -type f -printf '%f\n' | sort >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Report directory was not created." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload US report and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: healthcare-us-${{ github.run_id }}
+          path: reports/healthcare/us
+          if-no-files-found: warn
+          retention-days: 60
+
+  ah:
+    name: A/H evening review
+    needs: offline-validation
+    if: >-
+      always() &&
+      (
+        (github.event_name == 'schedule' && github.event.schedule == '30 10 * * 1-5') ||
+        (github.event_name == 'workflow_dispatch' && (inputs.session == 'ah' || inputs.session == 'both')) ||
+        (github.event_name == 'push' && contains(github.event.head_commit.message, '[deploy-full]'))
+      ) &&
+      (github.event_name != 'push' || needs.offline-validation.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install healthcare dependencies
+        # Keep the medical workflow independent of the upstream LLM/web/desktop
+        # stack.  Optional host DSA providers are detected at runtime; when
+        # unavailable, the report records the yfinance/SEC/CN/HK fallback.
+        run: python -m pip install -r requirements-healthcare.txt
+      - name: Generate A/H report
+        id: report
+        env:
+          SEC_USER_AGENT: ${{ secrets.SEC_USER_AGENT || 'HealthcareDaily/1.0' }}
+        run: |
+          mkdir -p "$REPORT_ROOT/ah"
+          python -m src.healthcare --session ah --config "$CONFIG" --output "$REPORT_ROOT/ah"
+      - name: Email A/H report when configured
+        if: always()
+        env:
+          EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_RECEIVERS: ${{ secrets.EMAIL_RECEIVERS }}
+          EMAIL_SMTP_HOST: ${{ secrets.EMAIL_SMTP_HOST }}
+          EMAIL_SMTP_PORT: ${{ secrets.EMAIL_SMTP_PORT }}
+          EMAIL_SMTP_MODE: ${{ secrets.EMAIL_SMTP_MODE }}
+        run: python scripts/healthcare_email.py --report-dir "$REPORT_ROOT/ah" --session ah
+      - name: Publish run summary
+        if: always()
+        run: |
+          echo "## A/H healthcare review" >> "$GITHUB_STEP_SUMMARY"
+          if [ -d "$REPORT_ROOT/ah" ]; then
+            find "$REPORT_ROOT/ah" -maxdepth 1 -type f -printf '%f\n' | sort >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Report directory was not created." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload A/H report and evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: healthcare-ah-${{ github.run_id }}
+          path: reports/healthcare/ah
+          if-no-files-found: warn
+          retention-days: 60

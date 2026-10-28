@@ -1,0 +1,14 @@
+{
+  "timezone": "Asia/Shanghai",
+  "universe": [
+    {"market":"cn","symbol":"600276.SS","name":"恒瑞医药","subsector":"创新药","official_domains":["cninfo.com.cn","sse.com.cn","hengrui.com"],"ir_feeds":[],"nct_ids":[]},
+    {"market":"cn","symbol":"300760.SZ","name":"迈瑞医疗","subsector":"医疗器械","official_domains":["cninfo.com.cn","szse.cn","mindray.com"],"ir_feeds":[],"nct_ids":[]},
+    {"market":"hk","symbol":"1093.HK","name":"石药集团","subsector":"创新药","official_domains":["hkexnews.hk","cspc.com.hk"],"ir_feeds":[],"nct_ids":[]},
+    {"market":"hk","symbol":"6160.HK","name":"百济神州","subsector":"创新药","official_domains":["hkexnews.hk","beigene.com"],"ir_feeds":[],"nct_ids":[]},
+    {"market":"us","symbol":"LLY","name":"Eli Lilly","subsector":"创新药","official_domains":["sec.gov","lilly.com"],"ir_feeds":[],"cik":"0000059478","nct_ids":[]},
+    {"market":"us","symbol":"MRNA","name":"Moderna","subsector":"疫苗与核酸药物","official_domains":["sec.gov","modernatx.com"],"ir_feeds":[],"cik":"0001682852","nct_ids":[]}
+  ],
+  "provider": {"quote_priority":["yfinance","akshare"],"timeout_seconds":20,"retries":1},
+  "source_policy": {"allowed_domains":["cninfo.com.cn","sse.com.cn","szse.cn","hkexnews.hk","sec.gov","clinicaltrials.gov","fda.gov","ema.europa.eu"],"company_domain_allowed":true,"require_publisher":true,"require_published_at":true,"require_url":true,"reject_search_snippet_as_evidence":true},
+  "report": {"language":"zh-CN","benchmarks":{"cn":"000300.SS","hk":"^HSI","us":"SPY"},"catalyst_horizons_days":[7,30,90],"max_rows_per_section":10,"representative_universe":true}
+}

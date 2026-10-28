@@ -1,0 +1,17 @@
+{
+  "quotes": [
+    {"symbol":"LLY","market":"us","close":820.0,"previous_close":810.0,"volume":1200000,"average_volume_20":900000},
+    {"symbol":"600276.SS","market":"cn","close":58.0,"previous_close":57.0,"volume":100000000,"average_volume_20":80000000},
+    {"symbol":"1093.HK","market":"hk","close":7.5,"previous_close":7.2,"volume":50000000,"average_volume_20":40000000}
+  ],
+  "benchmarks": [
+    {"symbol":"SPY","market":"us","close":680.0,"previous_close":675.0,"volume":1000000,"average_volume_20":900000},
+    {"symbol":"000300.SS","market":"cn","close":4700.0,"previous_close":4680.0,"volume":100000000,"average_volume_20":90000000},
+    {"symbol":"^HSI","market":"hk","close":26000.0,"previous_close":25800.0,"volume":1000000,"average_volume_20":900000}
+  ],
+  "evidence": [
+    {"symbol":"LLY","url":"https://www.sec.gov/Archives/edgar/data/59478/000005947826000001/example.htm","publisher":"U.S. Securities and Exchange Commission","published_at":"2026-10-27T00:00:00Z","retrieved_at":"2026-10-27T01:00:00Z","snippet":"Fixture SEC filing for offline smoke validation.","identifiers":["LLY","0000059478"],"source_kind":"sec_filing","event_date":"2026-10-27","event_precision":"day","event_label":"8-K"},
+    {"symbol":"600276.SS","url":"https://www.cninfo.com.cn/new/disclosure/detail?plate=sse&orgId=gssh0600276&stockCode=600276","publisher":"巨潮资讯","published_at":"2026-10-27T08:00:00+08:00","retrieved_at":"2026-10-27T09:00:00+08:00","snippet":"Fixture A-share announcement for offline smoke validation.","identifiers":["600276.SS"],"source_kind":"company_filing","event_date":"2026-10-27","event_precision":"day","event_label":"公告"},
+    {"symbol":"1093.HK","url":"https://www.hkexnews.hk/index.htm?sc_lang=en","publisher":"HKEXnews","published_at":"2026-10-27T09:00:00+08:00","retrieved_at":"2026-10-27T10:00:00+08:00","snippet":"Fixture HK announcement for offline smoke validation.","identifiers":["1093.HK"],"source_kind":"exchange_announcement","event_date":"2026-10-27","event_precision":"day","event_label":"公告"}
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  "as_of": "2026-10-27",
+  "scope": "已核验的行业会议节点；不代表任何公司已入选或承诺披露数据。",
+  "events": [
+    {
+      "symbol": "行业",
+      "label": "ASH 2026 常规摘要上线",
+      "event_date": "2026-11-04",
+      "event_precision": "day",
+      "event_status": "confirmed",
+      "event_time": "09:00",
+      "event_timezone": "America/New_York",
+      "url": "https://www.hematology.org/meetings/annual-meeting/abstracts",
+      "publisher": "American Society of Hematology",
+      "snippet": "ASH 官方摘要页面列明常规摘要于2026年11月4日美东时间09:00上线。此为行业会议节点，具体公司和试验须核对正式摘要。",
+      "published_at": null,
+      "published_precision": "unknown",
+      "verified_at": "2026-10-27T13:53:55Z"
+    },
+    {
+      "symbol": "行业",
+      "label": "SITC 2026 年会",
+      "event_date": "2026-11-04",
+      "event_window_end": "2026-11-08",
+      "event_precision": "date_range",
+      "event_status": "confirmed",
+      "url": "https://www.sitcancer.org/get-involved/events/event-description?CalendarEventKey=e819b9e3-f2c3-4ad4-a304-01a0f34a809a&Home=%2Fsitcancer-old%2Fevents%2Fcalendar",
+      "publisher": "Society for Immunotherapy of Cancer",
+      "snippet": "SITC 官方活动页面列明2026年年会于11月4日至8日举行。此为行业会议节点，不能据此推定单家公司数据披露安排。",
+      "published_at": null,
+      "published_precision": "unknown",
+      "verified_at": "2026-10-27T13:53:55Z"
+    },
+    {
+      "symbol": "行业",
+      "label": "ASH 2026 Late-breaking 摘要上线",
+      "event_date": "2026-12-07",
+      "event_precision": "day",
+      "event_status": "confirmed",
+      "url": "https://www.hematology.org/meetings/annual-meeting/abstracts",
+      "publisher": "American Society of Hematology",
+      "snippet": "ASH 官方摘要页面列明Late-breaking摘要于2026年12月7日上线。此为会议日程，尚不代表任何特定公司或试验入选。",
+      "published_at": null,
+      "published_precision": "unknown",
+      "verified_at": "2026-10-27T13:53:55Z"
+    },
+    {
+      "symbol": "行业",
+      "label": "第68届 ASH 年会",
+      "event_date": "2026-12-12",
+      "event_window_end": "2026-12-15",
+      "event_precision": "date_range",
+      "event_status": "confirmed",
+      "url": "https://www.hematology.org/meetings/annual-meeting",
+      "publisher": "American Society of Hematology",
+      "snippet": "ASH 官方年会页面列明第68届年会于2026年12月12日至15日举行。相关公司与药物催化剂以正式摘要及公司披露为准。",
+      "published_at": null,
+      "published_precision": "unknown",
+      "verified_at": "2026-10-27T13:53:55Z"
+    }
+  ]
+}
